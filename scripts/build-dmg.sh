@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build a distributable DMG with drag-to-Applications layout
+# Build a distributable DMG with styled drag-to-Applications layout
+# Requires: brew install create-dmg
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,7 +8,6 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 APP_NAME="East Lake Time Tracker"
 APP_PATH="$PROJECT_ROOT/dist/$APP_NAME.app"
 DMG_NAME="East-Lake-Time-Tracker"
-DMG_PATH="$PROJECT_ROOT/dist/$DMG_NAME.dmg"
 VERSION=$(python3 -c "import sys; sys.path.insert(0,'$PROJECT_ROOT/src'); from eastlake import __version__; print(__version__)")
 DMG_FINAL="$PROJECT_ROOT/dist/${DMG_NAME}-v${VERSION}.dmg"
 
@@ -18,30 +18,23 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# Clean up any previous DMG
-rm -f "$DMG_PATH" "$DMG_FINAL"
+rm -f "$DMG_FINAL"
 
-# Create a temporary directory for DMG contents
-DMG_TEMP="$PROJECT_ROOT/dist/dmg-staging"
-rm -rf "$DMG_TEMP"
-mkdir -p "$DMG_TEMP"
-
-# Copy the app
-cp -R "$APP_PATH" "$DMG_TEMP/"
-
-# Create Applications symlink for drag-to-install
-ln -s /Applications "$DMG_TEMP/Applications"
-
-# Create the DMG
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$DMG_TEMP" \
-    -ov \
-    -format UDZO \
-    "$DMG_FINAL"
-
-# Clean up staging
-rm -rf "$DMG_TEMP"
+create-dmg \
+    --volname "$APP_NAME" \
+    --volicon "$PROJECT_ROOT/assets/icon.icns" \
+    --background "$PROJECT_ROOT/assets/dmg_background.png" \
+    --window-pos 200 120 \
+    --window-size 835 600 \
+    --icon-size 128 \
+    --text-size 13 \
+    --icon "$APP_NAME.app" 230 295 \
+    --hide-extension "$APP_NAME.app" \
+    --app-drop-link 593 295 \
+    --no-internet-enable \
+    --filesystem HFS+ \
+    "$DMG_FINAL" \
+    "$APP_PATH"
 
 echo ""
 echo "DMG created: $DMG_FINAL"
