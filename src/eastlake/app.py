@@ -111,7 +111,7 @@ class EastLakeApp(rumps.App):
 
         self._async(self._refresh_active_timer)
 
-        # Deferred first-run check + hotkey warning
+        # Deferred first-run check + hotkey warning + update check
         def _deferred_startup(timer):
             timer.stop()
             if not self._hotkey_ok:
@@ -129,6 +129,8 @@ class EastLakeApp(rumps.App):
                     "No portals configured yet.\n\n"
                     "Go to Portals > Add Portal to connect your first time tracking backend.",
                 )
+            # Daily background update check (runs in background thread)
+            self._async(self._background_update_check)
         rumps.Timer(_deferred_startup, 2).start()
 
     # ------------------------------------------------------------------ #
@@ -1304,27 +1306,57 @@ class EastLakeApp(rumps.App):
 
     GITHUB_REPO = "East-Lake-Labs/EastLake-Portal-Widget"
 
+    def _fetch_latest_release(self):
+        """Fetch latest release info from GitHub. Returns (tag, url, notes) or None."""
+        import requests as req
+        url = f"https://api.github.com/repos/{self.GITHUB_REPO}/releases/latest"
+        r = req.get(url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        tag = data.get("tag_name", "").lstrip("v")
+        if not tag:
+            return None
+        return tag, data.get("html_url", ""), (data.get("body", "") or "")[:200]
+
+    def _background_update_check(self):
+        """Silent background check on launch - notifies only if update available."""
+        from eastlake import __version__
+        from datetime import datetime
+
+        # Only check once per day
+        last_check = get_pref("last_update_check", "")
+        today = datetime.now().date().isoformat()
+        if last_check == today:
+            return
+
+        set_pref("last_update_check", today)
+
+        try:
+            result = self._fetch_latest_release()
+            if not result:
+                return
+            latest_tag, release_url, _ = result
+            if latest_tag != __version__:
+                notifications.send(
+                    "Update Available",
+                    f"East Lake v{latest_tag} is available (you have v{__version__}). "
+                    "Check for Updates in Settings to install.",
+                )
+        except Exception as e:
+            log.debug("Background update check failed: %s", e)
+
     def _on_check_update(self, _sender):
-        """Check GitHub releases for a newer version."""
+        """Manual check from Settings menu."""
         from eastlake import __version__
         try:
-            import requests as req
-            url = f"https://api.github.com/repos/{self.GITHUB_REPO}/releases/latest"
-            r = req.get(url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
-
-            if r.status_code == 404:
-                self._alert("Update Check", f"Current version: {__version__}\n\nNo releases published yet.")
+            result = self._fetch_latest_release()
+            if not result:
+                self._alert("Update Check", f"Current version: v{__version__}\n\nNo releases published yet.")
                 return
 
-            r.raise_for_status()
-            data = r.json()
-            latest_tag = data.get("tag_name", "").lstrip("v")
-            release_url = data.get("html_url", "")
-            release_notes = data.get("body", "")[:200]
-
-            if not latest_tag:
-                self._alert("Update Check", f"Current version: {__version__}\n\nCould not parse latest release.")
-                return
+            latest_tag, release_url, release_notes = result
 
             if latest_tag != __version__:
                 choice = self._choice(
@@ -1341,7 +1373,7 @@ class EastLakeApp(rumps.App):
 
         except Exception as e:
             log.debug("Update check failed: %s", e)
-            self._alert("Update Check", f"Current version: {__version__}\n\nCould not reach GitHub.")
+            self._alert("Update Check", f"Current version: v{__version__}\n\nCould not reach GitHub.")
 
     # ------------------------------------------------------------------ #
     #  Offline queue                                                       #
