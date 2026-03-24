@@ -24,6 +24,9 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
@@ -40,18 +43,21 @@ jobs:
           APP_NAME="East Lake Time Tracker"
           DMG_NAME="East-Lake-Time-Tracker-v${{ steps.version.outputs.VERSION }}.dmg"
 
-          mkdir -p dist/dmg-staging
-          cp -R "dist/$APP_NAME.app" dist/dmg-staging/
-          ln -s /Applications dist/dmg-staging/Applications
-
-          hdiutil create \
-            -volname "$APP_NAME" \
-            -srcfolder dist/dmg-staging \
-            -ov \
-            -format UDZO \
-            "dist/$DMG_NAME"
-
-          rm -rf dist/dmg-staging
+          create-dmg \
+            --volname "$APP_NAME" \
+            --volicon "assets/icon.icns" \
+            --background "assets/dmg_background.png" \
+            --window-pos 200 120 \
+            --window-size 835 600 \
+            --icon-size 128 \
+            --text-size 13 \
+            --icon "$APP_NAME.app" 230 295 \
+            --hide-extension "$APP_NAME.app" \
+            --app-drop-link 593 295 \
+            --no-internet-enable \
+            --filesystem HFS+ \
+            "dist/$DMG_NAME" \
+            "dist/$APP_NAME.app"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
