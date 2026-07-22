@@ -1347,6 +1347,25 @@ class EastLakeApp(rumps.App):
 
     GITHUB_REPO = "East-Lake-Labs/EastLake-Portal-Widget"
 
+    @staticmethod
+    def _clean_release_notes(body):
+        """Convert GitHub's markdown release notes into plain dialog text."""
+        import re
+        lines = []
+        for line in (body or "").splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("**full changelog**"):
+                continue
+            if line.startswith("#"):
+                line = line.lstrip("#").strip()
+            if line.startswith(("* ", "- ")):
+                line = "• " + line[2:]
+            line = line.replace("**", "")
+            line = re.sub(r"\s+by @\S+( in \S+)?$", "", line)
+            lines.append(line)
+        text = "\n".join(lines)
+        return text[:277] + "..." if len(text) > 280 else text
+
     def _fetch_latest_release(self):
         """Fetch latest release info from GitHub.
 
@@ -1367,7 +1386,7 @@ class EastLakeApp(rumps.App):
              if a.get("name", "").endswith(".dmg")),
             None,
         )
-        return tag, data.get("html_url", ""), (data.get("body", "") or "")[:200], dmg_url
+        return tag, data.get("html_url", ""), self._clean_release_notes(data.get("body")), dmg_url
 
     def _background_update_check(self):
         """Silent background check on launch - notifies only if update available."""
@@ -1409,11 +1428,12 @@ class EastLakeApp(rumps.App):
 
             if latest_tag != __version__:
                 installable = bool(dmg_url and self._installed_app_path())
+                notes_block = f"\n\n{release_notes}" if release_notes else ""
                 choice = self._choice(
                     "Update Available",
                     f"Current: v{__version__}\n"
-                    f"Latest:  v{latest_tag}\n\n"
-                    f"{release_notes}",
+                    f"Latest:  v{latest_tag}"
+                    f"{notes_block}",
                     ["Install Update", "Later"] if installable else ["Open in Browser", "Later"],
                 )
                 if choice == 0:

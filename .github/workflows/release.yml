@@ -59,10 +59,13 @@ jobs:
             "dist/$DMG_NAME" \
             "dist/$APP_NAME.app"
 
+      - name: Extract release notes from commit message body
+        run: git log -1 --pretty=%b > RELEASE_NOTES.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/East-Lake-Time-Tracker-v${{ steps.version.outputs.VERSION }}.dmg
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
