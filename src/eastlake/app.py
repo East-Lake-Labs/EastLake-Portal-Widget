@@ -9,7 +9,7 @@ from datetime import datetime
 
 import AppKit
 import rumps
-from Foundation import NSTimer
+from Foundation import NSOperationQueue, NSTimer
 
 from eastlake.api_client import (
     APIError,
@@ -65,9 +65,44 @@ ASSETS_DIR = _find_assets_dir()
 ICON_PATH = os.path.join(ASSETS_DIR, "icon_menubar.png")
 APP_ICON_PATH = os.path.join(ASSETS_DIR, "icon.png")
 
+BUNDLE_ID = "io.eastlake.time-tracker"
+
+
+def _exit_if_already_running():
+    """Two live instances fight over the same status item slot and corrupt
+    its saved position, leaving the icon permanently off-screen."""
+    me = AppKit.NSRunningApplication.currentApplication()
+    if me.bundleIdentifier() != BUNDLE_ID:
+        return  # running from source under a python interpreter
+    others = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(BUNDLE_ID)
+    if any(app.processIdentifier() != me.processIdentifier() for app in others):
+        log.warning("Another instance is already running - exiting")
+        import sys
+        sys.exit(0)
+
+
+def _clear_stale_statusitem_position():
+    """macOS persists the status item's distance from the screen's right
+    edge; a value wider than any attached screen renders it invisible."""
+    defaults = AppKit.NSUserDefaults.standardUserDefaults()
+    key = "NSStatusItem Preferred Position Item-0"
+    saved = defaults.objectForKey_(key)
+    if saved is None:
+        return
+    widest = max((s.frame().size.width for s in AppKit.NSScreen.screens()), default=0)
+    try:
+        position = float(saved.doubleValue())
+    except AttributeError:
+        position = float(saved)
+    if widest and position > widest:
+        log.warning("Clearing stale status item position %.0f (widest screen %.0f)", position, widest)
+        defaults.removeObjectForKey_(key)
+
 
 class EastLakeApp(rumps.App):
     def __init__(self):
+        _exit_if_already_running()
+        _clear_stale_statusitem_position()
         super().__init__(
             name="East Lake",
             title=None,
@@ -396,24 +431,30 @@ class EastLakeApp(rumps.App):
 
     def _confirm(self, title, message, ok="OK", cancel="Cancel"):
         """Show a confirmation dialog. Returns True if OK clicked."""
+        self._activate()
         alert = AppKit.NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
         alert.addButtonWithTitle_(ok)
         alert.addButtonWithTitle_(cancel)
         self._style_alert(alert)
-        return alert.runModal() == AppKit.NSAlertFirstButtonReturn
+        result = alert.runModal() == AppKit.NSAlertFirstButtonReturn
+        self._deactivate()
+        return result
 
     def _alert(self, title, message=""):
+        self._activate()
         alert = AppKit.NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
         alert.addButtonWithTitle_("OK")
         self._style_alert(alert)
         alert.runModal()
+        self._deactivate()
 
     def _choice(self, title, message, buttons):
         """Show a dialog with multiple button choices. Returns 0-based index of clicked button."""
+        self._activate()
         alert = AppKit.NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
@@ -421,6 +462,7 @@ class EastLakeApp(rumps.App):
             alert.addButtonWithTitle_(btn)
         self._style_alert(alert)
         result = alert.runModal()
+        self._deactivate()
         # NSAlertFirstButtonReturn = 1000, second = 1001, etc.
         return result - AppKit.NSAlertFirstButtonReturn
 
@@ -537,11 +579,10 @@ class EastLakeApp(rumps.App):
         self._schedule_rebuild()
 
     def _schedule_rebuild(self):
-        rumps.Timer(self._do_rebuild, 0.1).start()
-
-    def _do_rebuild(self, timer):
-        timer.stop()
-        self._rebuild_menu()
+        # NSTimers scheduled from a background thread's run loop never fire;
+        # the main operation queue runs the rebuild on the main thread from
+        # any caller.
+        NSOperationQueue.mainQueue().addOperationWithBlock_(self._rebuild_menu)
 
     # ------------------------------------------------------------------ #
     #  Idle detection callbacks                                            #
