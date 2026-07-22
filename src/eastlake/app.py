@@ -1348,7 +1348,10 @@ class EastLakeApp(rumps.App):
     GITHUB_REPO = "East-Lake-Labs/EastLake-Portal-Widget"
 
     def _fetch_latest_release(self):
-        """Fetch latest release info from GitHub. Returns (tag, url, notes) or None."""
+        """Fetch latest release info from GitHub.
+
+        Returns (tag, url, notes, dmg_url) or None.
+        """
         import requests as req
         url = f"https://api.github.com/repos/{self.GITHUB_REPO}/releases/latest"
         r = req.get(url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
@@ -1359,7 +1362,12 @@ class EastLakeApp(rumps.App):
         tag = data.get("tag_name", "").lstrip("v")
         if not tag:
             return None
-        return tag, data.get("html_url", ""), (data.get("body", "") or "")[:200]
+        dmg_url = next(
+            (a.get("browser_download_url") for a in data.get("assets", [])
+             if a.get("name", "").endswith(".dmg")),
+            None,
+        )
+        return tag, data.get("html_url", ""), (data.get("body", "") or "")[:200], dmg_url
 
     def _background_update_check(self):
         """Silent background check on launch - notifies only if update available."""
@@ -1378,7 +1386,7 @@ class EastLakeApp(rumps.App):
             result = self._fetch_latest_release()
             if not result:
                 return
-            latest_tag, release_url, _ = result
+            latest_tag = result[0]
             if latest_tag != __version__:
                 notifications.send(
                     "Update Available",
@@ -1397,24 +1405,80 @@ class EastLakeApp(rumps.App):
                 self._alert("Update Check", f"Current version: v{__version__}\n\nNo releases published yet.")
                 return
 
-            latest_tag, release_url, release_notes = result
+            latest_tag, release_url, release_notes, dmg_url = result
 
             if latest_tag != __version__:
+                installable = bool(dmg_url and self._installed_app_path())
                 choice = self._choice(
                     "Update Available",
                     f"Current: v{__version__}\n"
                     f"Latest:  v{latest_tag}\n\n"
                     f"{release_notes}",
-                    ["Open in Browser", "Later"],
+                    ["Install Update", "Later"] if installable else ["Open in Browser", "Later"],
                 )
-                if choice == 0 and release_url:
-                    subprocess.Popen(["open", release_url])
+                if choice == 0:
+                    if installable:
+                        notifications.send("Downloading Update", f"East Lake v{latest_tag} is downloading...")
+                        self._async(self._download_and_install, latest_tag, dmg_url)
+                    elif release_url:
+                        subprocess.Popen(["open", release_url])
             else:
                 self._alert("Up to Date", f"v{__version__} is the latest release.")
 
         except Exception as e:
             log.debug("Update check failed: %s", e)
             self._alert("Update Check", f"Current version: v{__version__}\n\nCould not reach GitHub.")
+
+    def _installed_app_path(self):
+        """Path of the .app bundle we are running from, or None if not frozen."""
+        import sys
+        if not getattr(sys, "frozen", False):
+            return None
+        app = os.path.abspath(os.path.join(os.path.dirname(sys.executable), "..", ".."))
+        return app if app.endswith(".app") else None
+
+    def _download_and_install(self, tag, dmg_url):
+        """Download the release DMG, then hand off to a helper script that swaps
+        the bundle and relaunches after this process exits."""
+        import sys
+        import tempfile
+        import requests as req
+
+        app_path = self._installed_app_path()
+        try:
+            tmpdir = tempfile.mkdtemp(prefix="eastlake-update-")
+            dmg_path = os.path.join(tmpdir, f"East-Lake-v{tag}.dmg")
+            with req.get(dmg_url, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(dmg_path, "wb") as f:
+                    for chunk in r.iter_content(256 * 1024):
+                        f.write(chunk)
+        except Exception as e:
+            log.warning("Update download failed: %s", e)
+            notifications.send("Update Failed", "Could not download the update. Try again later.")
+            return
+
+        # The bundle cannot be replaced while it is running, so the installer
+        # waits for this process to exit before swapping it.
+        script_path = os.path.join(tmpdir, "install.sh")
+        with open(script_path, "w") as f:
+            f.write(f"""#!/bin/bash
+while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.2; done
+MNT="{tmpdir}/mnt"
+hdiutil attach "{dmg_path}" -nobrowse -mountpoint "$MNT" || exit 1
+NEW=$(ls -d "$MNT"/*.app 2>/dev/null | head -1)
+if [ -z "$NEW" ]; then hdiutil detach "$MNT" -force; exit 1; fi
+rm -rf "{app_path}"
+ditto "$NEW" "{app_path}"
+hdiutil detach "$MNT" -force
+xattr -dr com.apple.quarantine "{app_path}" 2>/dev/null
+open "{app_path}"
+rm -rf "{tmpdir}"
+""")
+        os.chmod(script_path, 0o755)
+        subprocess.Popen(["/bin/bash", script_path], start_new_session=True)
+        notifications.send("Installing Update", f"East Lake v{tag} will relaunch momentarily.")
+        NSOperationQueue.mainQueue().addOperationWithBlock_(rumps.quit_application)
 
     # ------------------------------------------------------------------ #
     #  Offline queue                                                       #
